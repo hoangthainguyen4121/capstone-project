@@ -3,6 +3,8 @@ import { DocumentClient } from 'aws-sdk/clients/dynamodb'
 import { createLogger } from '../utils/logger'
 import { TodoItem } from '../models/TodoItem'
 import { TodoUpdate } from '../models/TodoUpdate';
+import { TodoPagination } from '../models/TodoPagination';
+import { encodeNextKey } from '../utils/queryParameter';
 const AWSXRay = require('aws-xray-sdk')
 
 const XAWS = AWSXRay.captureAWS(AWS)
@@ -16,19 +18,59 @@ export class TodosAccess {
         private readonly tableName = process.env.TODOS_TABLE) {
     }
 
-    async getTodos(userId: string): Promise<TodoItem[]> {
+    async getTodos(userId: string, limit: number, key: any): Promise<TodoPagination> {
         logger.info('Getting all todos')
 
         const query = await this.docClient.query({
             TableName: process.env.TODOS_TABLE,
+            Limit: limit,
             KeyConditionExpression: 'userId = :userId',
             ExpressionAttributeValues: {
                 ':userId': userId
+            },
+            ExclusiveStartKey: key
+        }).promise()
+
+        logger.info("Result query")
+        logger.info(query)
+
+        const result: TodoPagination = {
+            items: query.Items as TodoItem[],
+            nextKey: encodeNextKey(query.LastEvaluatedKey)
+        }
+
+        return result
+    }
+
+    async getTodoByImageId(imageId: string): Promise<TodoItem> {
+        logger.info('Getting to do by image id')
+
+        const query = await this.docClient.scan({
+            TableName: process.env.TODOS_TABLE,
+            FilterExpression: 'imageId = :imageId',
+            ExpressionAttributeValues: {
+                ':imageId': imageId
             }
         }).promise()
 
         const items = query.Items
-        return items as TodoItem[]
+        return items[0] as TodoItem
+    }
+
+    async getTodo(todoId: string, userId: string): Promise<TodoItem> {
+        logger.info('Getting to do')
+
+        const query = await this.docClient.query({
+            TableName: process.env.TODOS_TABLE,
+            KeyConditionExpression: 'userId = :userId AND todoId = :todoId',
+            ExpressionAttributeValues: {
+                ':userId': userId,
+                ':todoId': todoId
+            }
+        }).promise()
+
+        const items = query.Items
+        return items[0] as TodoItem
     }
 
     async createTodo(data: TodoItem): Promise<TodoItem> {
@@ -64,17 +106,24 @@ export class TodosAccess {
     }
 
     // Update attachment Url
-    async updateImageSourceToDo(todoId: string, userId: string) {
-        const attachmentUrl = `https://${process.env.ATTACHMENT_S3_BUCKET}.s3.amazonaws.com/${todoId}`
+    async updateImageSourceToDo(todoId: string, userId: string, imageId: string) {
+        var attachmentUrl = `https://${process.env.ATTACHMENT_S3_BUCKET}.s3.amazonaws.com/${imageId}.png`
+
+        if (imageId === "" || imageId === null) {
+            attachmentUrl = null
+            imageId = null
+        }
+
         await this.docClient.update({
             TableName: this.tableName,
             Key: {
                 userId: userId,
                 todoId: todoId
             },
-            UpdateExpression: "set attachmentUrl = :attachmentUrl",
+            UpdateExpression: "set attachmentUrl = :attachmentUrl, imageId = :imageId",
             ExpressionAttributeValues: {
                 ":attachmentUrl": attachmentUrl,
+                ":imageId": imageId,
             },
         }).promise();
     }
